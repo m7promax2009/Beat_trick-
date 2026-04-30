@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --beat-cyan: #00f0ff;
+  --beat-pink: #ff2d78;
+  --beat-green: #00ff87;
+}
+
+::selection { background: rgba(0,240,255,0.25); color: #fff; }
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #06060f; }
+::-webkit-scrollbar-thumb { background: rgba(0,240,255,0.3); border-radius: 2px; }
+
+@layer utilities {
+  .text-glow-cyan   { text-shadow: 0 0 20px #00f0ff, 0 0 60px rgba(0,240,255,0.4); }
+  .text-glow-pink   { text-shadow: 0 0 20px #ff2d78, 0 0 60px rgba(255,45,120,0.4); }
+  .text-glow-green  { text-shadow: 0 0 20px #00ff87, 0 0 60px rgba(0,255,135,0.4); }
+  .text-glow-yellow { text-shadow: 0 0 20px #ffe135, 0 0 60px rgba(255,225,53,0.4); }
+}
