@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, memo } from 'react'
 
 const COLORS = {
   PERFECT: '#ffe135',
@@ -10,8 +10,8 @@ const COLORS = {
   miss:    '#ff3030',
 }
 
-export default function ScorePopup({ id, text, grade, x, y, onDone }) {
-  const color = COLORS[grade] || COLORS[text] || '#fff'
+function ScorePopup({ id, text, grade, x, y, onDone }) {
+  const color = COLORS[grade] || '#fff'
 
   useEffect(() => {
     const t = setTimeout(() => onDone(id), 900)
@@ -27,3 +27,5 @@ export default function ScorePopup({ id, text, grade, x, y, onDone }) {
     </div>
   )
 }
+
+export default memo(ScorePopup)

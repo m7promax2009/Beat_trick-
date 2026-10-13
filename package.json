@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "export": "EXPORT_STATIC=true next build",
+    "package:games": "node scripts/package-games.js",
     "start": "next start",
     "lint": "next lint"
   },

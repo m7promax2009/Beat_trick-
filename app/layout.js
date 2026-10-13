@@ -13,6 +13,11 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="uz" className={`${orbitron.variable} ${exo2.variable}`}>
+      <head>
+        {/* Platform SDKs (Non-blocking, deferred) */}
+        <script src="https://yandex.ru/games/sdk/v2" defer></script>
+        <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
+      </head>
       <body className="bg-beat-bg text-white font-body antialiased overflow-x-hidden">
         <div className="fixed inset-0 pointer-events-none z-0">
           <div className="absolute inset-0 opacity-[0.03]"

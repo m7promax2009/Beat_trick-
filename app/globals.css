@@ -6,6 +6,8 @@
   --beat-cyan: #00f0ff;
   --beat-pink: #ff2d78;
   --beat-green: #00ff87;
+  --beat-purple: #9b4dff;
+  --beat-yellow: #ffe135;
 }
 
 ::selection { background: rgba(0,240,255,0.25); color: #fff; }
@@ -13,9 +15,88 @@
 ::-webkit-scrollbar-track { background: #06060f; }
 ::-webkit-scrollbar-thumb { background: rgba(0,240,255,0.3); border-radius: 2px; }
 
+/* Custom TikTok-style Cyber Glow Animations */
+@keyframes border-beam {
+  0% { offset-distance: 0%; }
+  100% { offset-distance: 100%; }
+}
+
+@keyframes laser-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.15); opacity: 0.3; }
+  100% { transform: scale(1); opacity: 0.8; }
+}
+
+@keyframes float-gentle {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-8px); }
+}
+
+@keyframes neon-glow-flow {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes approach-ring-shrink {
+  0% {
+    transform: scale(1.85);
+    opacity: 0.25;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes countdown-arc {
+  0% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: var(--circ, 200px);
+  }
+}
+
 @layer utilities {
   .text-glow-cyan   { text-shadow: 0 0 20px #00f0ff, 0 0 60px rgba(0,240,255,0.4); }
   .text-glow-pink   { text-shadow: 0 0 20px #ff2d78, 0 0 60px rgba(255,45,120,0.4); }
   .text-glow-green  { text-shadow: 0 0 20px #00ff87, 0 0 60px rgba(0,255,135,0.4); }
   .text-glow-yellow { text-shadow: 0 0 20px #ffe135, 0 0 60px rgba(255,225,53,0.4); }
+  .text-glow-purple { text-shadow: 0 0 20px #9b4dff, 0 0 60px rgba(155,77,255,0.4); }
+
+  .animate-float-gentle {
+    animation: float-gentle 3.5s ease-in-out infinite;
+  }
+
+  .glow-box-cyan {
+    box-shadow: 0 0 25px rgba(0, 240, 255, 0.4), inset 0 0 15px rgba(0, 240, 255, 0.2);
+  }
+
+  .glow-box-pink {
+    box-shadow: 0 0 25px rgba(255, 45, 120, 0.4), inset 0 0 15px rgba(255, 45, 120, 0.2);
+  }
+
+  .laser-border {
+    position: relative;
+    overflow: hidden;
+  }
+  .laser-border::before {
+    content: '';
+    position: absolute;
+    inset: -50%;
+    background: conic-gradient(from 0deg, transparent 0deg 300deg, #00f0ff 330deg, #ff2d78 360deg);
+    animation: laser-spin 4s linear infinite;
+    z-index: 0;
+  }
+  .laser-border-inner {
+    position: relative;
+    z-index: 1;
+    background: rgba(10, 10, 25, 0.92);
+  }
 }

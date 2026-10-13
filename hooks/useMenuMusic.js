@@ -135,8 +135,21 @@ export function useMenuMusic() {
   const stop = useCallback(() => {
     runRef.current = false
     clearTimeout(timerRef.current)
+    timerRef.current = null
     if (ctxRef.current && masterRef.current) {
-      masterRef.current.gain.linearRampToValueAtTime(0, ctxRef.current.currentTime + 1.5)
+      try {
+        masterRef.current.gain.linearRampToValueAtTime(0, ctxRef.current.currentTime + 0.5)
+      } catch {}
+    }
+    // Close context after a short delay to free resources
+    if (ctxRef.current) {
+      setTimeout(() => {
+        if (!runRef.current && ctxRef.current) {
+          try { ctxRef.current.close() } catch {}
+          ctxRef.current = null
+          masterRef.current = null
+        }
+      }, 1000)
     }
   }, [])
 
@@ -144,6 +157,20 @@ export function useMenuMusic() {
     if (masterRef.current) masterRef.current.gain.value = Math.max(0, Math.min(1, v))
   }, [])
 
-  useEffect(() => () => stop(), [stop])
+  // Clean up on unmount
+  useEffect(() => {
+    const ctx = ctxRef.current
+    return () => {
+      runRef.current = false
+      clearTimeout(timerRef.current)
+      if (ctx) {
+        try {
+          // Quick fade
+          if (masterRef.current) masterRef.current.gain.value = 0
+          ctx.close()
+        } catch {}
+      }
+    }
+  }, [])
   return { start, stop, setVolume }
 }

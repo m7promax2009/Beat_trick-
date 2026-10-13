@@ -15,17 +15,22 @@ import ScorePopup from '../../components/game/ScorePopup'
 import CountdownOverlay from '../../components/game/CountdownOverlay'
 import WorldBackground from '../../components/game/WorldBackground'
 import BeatVisualizer from '../../components/game/BeatVisualizer'
-import MusicSearch from '../../components/music/MusicSearch'
-import ProtectedRoute from '../../components/layout/ProtectedRoute'
 import Spinner from '../../components/ui/Spinner'
+import CyberSenseiHUD from '../../components/ai/CyberSenseiHUD'
+import AIChatModal from '../../components/ai/AIChatModal'
+import BorderBeam from '../../components/ui/BorderBeam'
+import CyberPlayfield, { ARENA_SLOTS } from '../../components/game/CyberPlayfield'
+import { getAICommentary, AI_DIFFICULTIES } from '../../lib/aiAgent'
+import { initYandexSDK, submitYandexScore } from '../../lib/yandexSdk'
 
 const GRID_POSITIONS = [
-  { x: 12, y: 15 }, { x: 50, y: 15 }, { x: 88, y: 15 },
-  { x: 12, y: 50 }, { x: 50, y: 50 }, { x: 88, y: 50 },
-  { x: 12, y: 85 }, { x: 50, y: 85 }, { x: 88, y: 85 },
+  { x: 16, y: 18 }, { x: 50, y: 18 }, { x: 84, y: 18 },
+  { x: 16, y: 50 }, { x: 50, y: 50 }, { x: 84, y: 50 },
+  { x: 16, y: 82 }, { x: 50, y: 82 }, { x: 84, y: 82 },
 ]
 const SHAPES       = ['circle', 'square', 'diamond', 'triangle', 'hexagon']
-const BTN_STAGGER  = 500
+const MAX_LIVES    = 5
+const COMBO_MULT   = [1, 1, 1.2, 1.5, 1.8, 2, 2.5, 3]
 
 const WORLD_QUERY = {
   'forest':    'nature ambient relaxing',
@@ -37,25 +42,30 @@ const WORLD_QUERY = {
   'cyber-god': 'drum and bass fast',
 }
 
-async function fetchRandomTrack(worldId) {
+async function fetchRandomTrack(worldId, retries = 2) {
   const query = WORLD_QUERY[worldId] || 'electronic music'
-  try {
-    const res  = await fetch(
-      `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=50&country=us`
-    )
-    const data = await res.json()
-    const pool = (data.results || []).filter(r => r.previewUrl)
-    if (!pool.length) return null
-    const picked = pool[Math.floor(Math.random() * pool.length)]
-    return {
-      title:   `${picked.trackName} — ${picked.artistName}`,
-      url:     picked.previewUrl,
-      artwork: picked.artworkUrl100,
-      artist:  picked.artistName,
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(
+        `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=50&country=us`
+      )
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      const pool = (data.results || []).filter(r => r.previewUrl)
+      if (!pool.length) continue
+      const picked = pool[Math.floor(Math.random() * pool.length)]
+      return {
+        title:   `${picked.trackName} — ${picked.artistName}`,
+        url:     picked.previewUrl,
+        artwork: picked.artworkUrl100,
+        artist:  picked.artistName,
+      }
+    } catch {
+      if (attempt >= retries) return null
+      await new Promise(r => setTimeout(r, 800 * (attempt + 1)))
     }
-  } catch {
-    return null
   }
+  return null
 }
 
 function GameScreen() {
@@ -63,397 +73,929 @@ function GameScreen() {
   const { user, currentLevel, setLastResult, settings, addHit: storeAddHit, addMiss: storeAddMiss, addTrick: storeAddTrick, resetSession } = useStore()
   const { loadAndPlay, stop, playSFX, getFrequencyData } = useAudio()
 
-  const { world, bpm, buttonCount, trickChance, hitWindowFactor } = getDifficultyForLevel(currentLevel)
+  // Pacing mode: 'relaxed' (50s) | 'normal' (65s) | 'rush' (75s Demon Mode)
+  const [pacing, setPacing] = useState('normal')
+  const [aiDuel, setAiDuel] = useState(false)
+  const [aiRivalState, setAiRivalState] = useState({ score: 0, combo: 0 })
+  const [aiSpeech, setAiSpeech] = useState(getAICommentary('start'))
+
+  const { world, bpm, buttonCount, trickChance, hitWindowFactor } = getDifficultyForLevel(currentLevel, pacing)
   const planetLevel = getPlanetLevel(currentLevel, world)
   const t = tFor(settings?.language)
 
   // phase: ready | search | countdown | playing | ended
-  const [phase,      setPhase]      = useState('ready')
-  const [track,      setTrack]      = useState(null)
+  const [phase,        setPhase]        = useState('ready')
+  const [track,        setTrack]        = useState(null)
   const [trackLoading, setTrackLoading] = useState(true)
-  const [buttons,    setButtons]    = useState([])
-  const [score,      setScore]      = useState(0)
-  const [combo,      setCombo]      = useState(0)
-  const [maxCombo,   setMaxCombo]   = useState(0)
-  const [lives,      setLives]      = useState(3)
-  const [popups,     setPopups]     = useState([])
-  const [flash,      setFlash]      = useState(null)
-  const [shaking,    setShaking]    = useState(false)
-  const [helpOpen,   setHelpOpen]   = useState(false)
+  const [buttons,      setButtons]      = useState([])
+  const [score,        setScore]        = useState(0)
+  const [combo,        setCombo]        = useState(0)
+  const [maxCombo,     setMaxCombo]     = useState(0)
+  const [lives,        setLives]        = useState(MAX_LIVES)
+  const [popups,       setPopups]       = useState([])
+  const [flash,        setFlash]        = useState(null)
+  const [shaking,      setShaking]      = useState(false)
+  const [helpOpen,     setHelpOpen]     = useState(false)
+  const [pressedKey,   setPressedKey]   = useState(null)
+  const [aiModalOpen,  setAiModalOpen]  = useState(false)
 
-  const livesRef   = useRef(3)
-  const comboRef   = useRef(0)
-  const scoreRef   = useRef(0)
-  const hitsRef    = useRef(0)
-  const missRef    = useRef(0)
-  const trickRef   = useRef(0)
-  const runRef     = useRef(false)
-  const beatRef    = useRef(null)
-  const pendingRef = useRef([])
+  // Geometry Dash Pacing & Wave System
+  const ROUND_DURATION = pacing === 'rush' ? 75 : pacing === 'relaxed' ? 50 : 65
+  const [timeLeft,     setTimeLeft]     = useState(ROUND_DURATION)
+  const [isVictory,    setIsVictory]    = useState(false)
+  const [hasShield,    setHasShield]    = useState(false)
+  const [bestPercent,  setBestPercent]  = useState(0)
+  const [deathPercent, setDeathPercent] = useState(0)
+
+  const hasShieldRef   = useRef(false)
+  hasShieldRef.current = hasShield
+  const timeLeftRef    = useRef(timeLeft)
+  timeLeftRef.current  = timeLeft
+  const currentWaveRef = useRef(1)
+
+  // Geometry Dash dynamic 0%-100% progress & waves
+  const currentPercent = Math.min(100, Math.floor(((ROUND_DURATION - timeLeft) / ROUND_DURATION) * 100))
+  const currentWave    = currentPercent >= 65 ? 3 : currentPercent >= 30 ? 2 : 1
+  currentWaveRef.current = currentWave
+
+  // Platform SDK Initialization
+  useEffect(() => {
+    initYandexSDK()
+  }, [])
+
+  // ── Mutable game refs ──
+  const gs = useRef({
+    lives: MAX_LIVES,
+    combo: 0,
+    score: 0,
+    hits: 0,
+    misses: 0,
+    tricks: 0,
+    latencies: [],
+    aiScore: 0,
+  })
+  const runRef       = useRef(false)
+  const beatRef      = useRef(null)
+  const pendingRef   = useRef([])
+  const endGameRef   = useRef(null)
+  const endedRef     = useRef(false)
+  const buttonsRef   = useRef([])
+  buttonsRef.current = buttons
 
   const beatInterval = calcBeatInterval(bpm)
 
-  // Auto-load random track on mount
-  useEffect(() => {
-    resetSession()
-    setTrackLoading(true)
-    fetchRandomTrack(world.id).then(t => {
-      setTrack(t)
-      setTrackLoading(false)
-    })
-  }, [world.id])
+  // Dynamic button lifetime: responsive and adrenaline-inducing
+  const buttonLifetime = Math.max(780, Math.round(beatInterval * 1.8 * hitWindowFactor))
 
-  const doFlash = (type) => {
-    setFlash(type)
-    setTimeout(() => setFlash(null), 280)
+  const scheduleSideEffect = (fn) => {
+    setTimeout(fn, 0)
   }
 
-  const addPopup = (text, grade, slot) => {
+  const doFlash = useCallback((type) => {
+    setFlash(type)
+    setTimeout(() => setFlash(null), 260)
+  }, [])
+
+  const addPopup = useCallback((text, grade, slot) => {
     const pos = GRID_POSITIONS[slot] ?? GRID_POSITIONS[4]
     const id  = Date.now() + Math.random()
     setPopups(p => [...p, { id, text, grade, x: `${pos.x}%`, y: `${pos.y}%` }])
-  }
+  }, [])
 
   const removePopup = useCallback((id) => setPopups(p => p.filter(pp => pp.id !== id)), [])
 
-  const endGame = useCallback(async () => {
+  // ── End game (Supports Geometry Dash Crash vs 100% Victory) ──
+  const endGame = useCallback((isWin = false) => {
+    if (endedRef.current) return
+    endedRef.current = true
     runRef.current = false
     clearTimeout(beatRef.current)
-    pendingRef.current.forEach(clearTimeout)
+    pendingRef.current.forEach((id) => {
+      clearTimeout(id)
+      clearInterval(id)
+    })
     pendingRef.current = []
     stop()
-    setPhase('ended')
-    const result = { worldId: world.id, level: currentLevel, score: scoreRef.current,
-      hits: hitsRef.current, misses: missRef.current, tricks: trickRef.current, maxCombo, bpm }
-    setLastResult(result)
-    try { await gameAPI.saveResult(result) } catch {}
-  }, [world, currentLevel, maxCombo, bpm, stop, setLastResult])
 
+    const percent = Math.min(100, Math.floor(((ROUND_DURATION - timeLeftRef.current) / ROUND_DURATION) * 100))
+    setDeathPercent(percent)
+    setBestPercent((prev) => Math.max(prev, percent))
+    setIsVictory(isWin)
+    if (isWin) {
+      playSFX('combo', settings.sfxVolume)
+      setAiSpeech(getAICommentary('win'))
+    } else {
+      setAiSpeech(getAICommentary('crash'))
+    }
+
+    scheduleSideEffect(() => {
+      setPhase('ended')
+      const avgReaction = gs.current.latencies.length
+        ? Math.round(gs.current.latencies.reduce((a, b) => a + b, 0) / gs.current.latencies.length)
+        : 190
+
+      const result = {
+        worldId: world.id, level: currentLevel,
+        score: gs.current.score, hits: gs.current.hits,
+        misses: gs.current.misses, tricks: gs.current.tricks,
+        maxCombo, bpm, avgReaction,
+        aiDuel, aiScore: gs.current.aiScore,
+        aiWon: aiDuel ? gs.current.score >= gs.current.aiScore : null,
+        isVictory: isWin,
+        progressPercent: percent,
+      }
+      setLastResult(result)
+      gameAPI.saveResult(result).catch(() => {})
+      submitYandexScore('global_score', gs.current.score)
+    })
+  }, [world.id, currentLevel, maxCombo, bpm, stop, setLastResult, aiDuel, playSFX, settings.sfxVolume, ROUND_DURATION])
+
+  endGameRef.current = endGame
+
+  // ── Track loading ──
+  const fetchIdRef = useRef(0)
+  const loadTrack = useCallback(async (worldId) => {
+    const id = ++fetchIdRef.current
+    setTrackLoading(true)
+    const tData = await fetchRandomTrack(worldId)
+    if (id === fetchIdRef.current) {
+      setTrack(tData)
+      setTrackLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    resetSession()
+    endedRef.current = false
+    gs.current = { lives: MAX_LIVES, combo: 0, score: 0, hits: 0, misses: 0, tricks: 0, latencies: [], aiScore: 0 }
+    loadTrack(world.id)
+    return () => {
+      fetchIdRef.current++
+      runRef.current = false
+      clearTimeout(beatRef.current)
+      pendingRef.current.forEach((id) => {
+        clearTimeout(id)
+        clearInterval(id)
+      })
+      pendingRef.current = []
+      stop()
+    }
+  }, [world.id])
+
+  // ── Spawn Beat Cadence (Escalating Waves & Special Beats) ──
   const spawnBeat = useCallback(() => {
     if (!runRef.current) return
-    const trickCount  = Math.random() < trickChance ? 1 : 0
-    const slots       = generateSlots(buttonCount + trickCount, 9)
+    const isRunning = () => runRef.current
 
-    slots.forEach((slot, i) => {
-      const isTrick = i >= buttonCount
+    // Number of active buttons on screen right now
+    const currentActive = buttonsRef.current
+    const occupiedSlots = new Set(currentActive.map(b => b.slot))
+
+    // Dynamic wave scaling
+    const wave = currentWaveRef.current || 1
+    const count = wave === 3 ? (Math.random() < 0.6 ? 2 : 1) : wave === 2 ? (Math.random() < 0.35 ? 2 : 1) : 1
+    const availableSlots = [0, 1, 2, 3, 4, 5, 6, 7, 8].filter(s => !occupiedSlots.has(s))
+    if (!availableSlots.length) return
+
+    // Shuffle available slots
+    const chosenSlots = availableSlots.sort(() => Math.random() - 0.5).slice(0, count)
+    const hasTrick = Math.random() < trickChance
+
+    chosenSlots.forEach((slot, i) => {
+      const isTrick  = hasTrick && i === chosenSlots.length - 1
+      const isGold   = !isTrick && Math.random() < 0.12
+      const isShield = !isTrick && !isGold && !hasShieldRef.current && Math.random() < 0.08
+      const isBurst  = !isTrick && !isGold && !isShield && wave >= 2 && Math.random() < 0.15
+
+      // Wave-adjusted window: faster in later waves for true Geometry Dash rush
+      const waveSpeed = wave === 3 ? 0.75 : wave === 2 ? 0.88 : 1.0
+      const btnLifetime = isBurst
+        ? Math.round(buttonLifetime * 0.65)
+        : Math.round(buttonLifetime * waveSpeed)
+
       const btn = {
-        id: `b-${Date.now()}-${i}`, slot, isTrick,
-        shape: SHAPES[Math.floor(Math.random() * SHAPES.length)],
-        color: isTrick ? world.theme.secondary : world.theme.primary,
-        window: Math.round(beatInterval * 0.82 * hitWindowFactor),
+        id: `btn-${Date.now()}-${i}-${slot}`,
+        slot,
+        isTrick,
+        isGold,
+        isShield,
+        isBurst,
+        shape: isGold ? 'circle' : isShield ? 'hexagon' : SHAPES[Math.floor(Math.random() * SHAPES.length)],
+        color: isTrick ? '#ff2525' : isGold ? '#ffe135' : isShield ? '#00ff87' : isBurst ? '#ff2d78' : world.theme.primary,
+        window: btnLifetime,
       }
+
+      const staggerMs = i * Math.round(beatInterval * 0.5)
       const spawnTimer = setTimeout(() => {
-        if (!runRef.current) return
+        if (!isRunning()) return
         const actualBtn = { ...btn, appearedAt: Date.now() }
         setButtons(prev => [...prev, actualBtn])
-        if (!actualBtn.isTrick) {
-          const expireTimer = setTimeout(() => {
-            setButtons(prev => {
-              if (!prev.find(b => b.id === actualBtn.id)) return prev
-              livesRef.current = Math.max(0, livesRef.current - 1)
-              setLives(livesRef.current); comboRef.current = 0; setCombo(0)
-              doFlash('miss'); playSFX('miss', settings.sfxVolume)
-              storeAddMiss(); missRef.current++
-              if (livesRef.current <= 0) endGame()
-              return prev.filter(b => b.id !== actualBtn.id)
-            })
-          }, actualBtn.window)
-          pendingRef.current.push(expireTimer)
-        } else {
-          const expireTimer = setTimeout(
-            () => setButtons(prev => prev.filter(b => b.id !== actualBtn.id)),
-            actualBtn.window
-          )
-          pendingRef.current.push(expireTimer)
-        }
-      }, i * BTN_STAGGER)
+
+        // Expiry timer
+        const expireTimer = setTimeout(() => {
+          setButtons(prev => {
+            const exists = prev.find(b => b.id === actualBtn.id)
+            if (!exists) return prev
+
+            // Missed normal/special button
+            if (!actualBtn.isTrick) {
+              if (hasShieldRef.current) {
+                hasShieldRef.current = false
+                scheduleSideEffect(() => {
+                  setHasShield(false)
+                  addPopup('🛡️ QALQON HIMOYA QILDI!', 'GREAT', actualBtn.slot)
+                  playSFX('hit', settings.sfxVolume)
+                })
+              } else {
+                gs.current.lives = Math.max(0, gs.current.lives - 1)
+                gs.current.combo = 0
+                gs.current.misses++
+                scheduleSideEffect(() => {
+                  storeAddMiss()
+                  setLives(gs.current.lives)
+                  setCombo(0)
+                  doFlash('miss')
+                  playSFX('miss', settings.sfxVolume)
+                  setAiSpeech(getAICommentary('miss'))
+                  if (gs.current.lives <= 2) {
+                    setAiSpeech(getAICommentary('lowHealth'))
+                  }
+                  if (gs.current.lives <= 0) endGameRef.current?.(false)
+                })
+              }
+            }
+            return prev.filter(b => b.id !== actualBtn.id)
+          })
+        }, actualBtn.window)
+
+        pendingRef.current.push(expireTimer)
+      }, staggerMs)
+
       pendingRef.current.push(spawnTimer)
     })
-  }, [buttonCount, trickChance, hitWindowFactor, world, beatInterval, playSFX, settings.sfxVolume, storeAddMiss, endGame])
+
+    // Simulated AI Rival score accumulation (if Duel Mode active)
+    if (aiDuel && runRef.current) {
+      const aiAcc = AI_DIFFICULTIES.pro.accuracy
+      if (Math.random() < aiAcc) {
+        const aiEarned = Math.round(12 * (1 + Math.min(gs.current.combo, 5) * 0.2))
+        gs.current.aiScore += aiEarned
+        setAiRivalState({ score: gs.current.aiScore, combo: 5 })
+      }
+    }
+  }, [buttonLifetime, beatInterval, world.theme.primary, playSFX, settings.sfxVolume, storeAddMiss, doFlash, aiDuel, trickChance, addPopup])
 
   const startBeatLoop = useCallback(() => {
+    clearTimeout(beatRef.current)
     const tick = () => {
       if (!runRef.current) return
       spawnBeat()
-      beatRef.current = setTimeout(tick, beatInterval)
+      const wave = currentWaveRef.current || 1
+      const factor = wave === 3 ? 0.8 : wave === 2 ? 1.05 : 1.4
+      const measureInterval = Math.max(460, Math.round(beatInterval * factor))
+      beatRef.current = setTimeout(tick, measureInterval)
     }
-    beatRef.current = setTimeout(tick, Math.round(beatInterval * 0.4))
+    beatRef.current = setTimeout(tick, Math.round(beatInterval * 0.7))
   }, [spawnBeat, beatInterval])
 
+  // ── Start playing ──
   const handleCountdownDone = useCallback(async () => {
-    setPhase('playing')
     runRef.current = true
-    livesRef.current = 3; comboRef.current = 0; scoreRef.current = 0
-    hitsRef.current = 0; missRef.current = 0; trickRef.current = 0
-    setLives(3); setCombo(0); setScore(0)
-    if (track?.url) await loadAndPlay(track.url, settings.musicVolume)
-    startBeatLoop()
-  }, [track, loadAndPlay, settings.musicVolume, startBeatLoop])
+    endedRef.current = false
+    gs.current = { lives: MAX_LIVES, combo: 0, score: 0, hits: 0, misses: 0, tricks: 0, latencies: [], aiScore: 0 }
+    setLives(MAX_LIVES)
+    setCombo(0)
+    setScore(0)
+    setMaxCombo(0)
+    setButtons([])
+    setHasShield(false)
+    hasShieldRef.current = false
+    setTimeLeft(ROUND_DURATION)
+    setIsVictory(false)
+    setPhase('playing')
+    setAiSpeech(getAICommentary('start'))
 
+    if (track?.url) {
+      try { await loadAndPlay(track.url, settings.musicVolume) } catch {}
+    }
+    startBeatLoop()
+
+    // ⏱️ Stage Survival Countdown
+    const timerInterval = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          clearInterval(timerInterval)
+          endGameRef.current?.(true) // 100% Complete!
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+    pendingRef.current.push(timerInterval)
+  }, [track, loadAndPlay, settings.musicVolume, startBeatLoop, ROUND_DURATION])
+
+  // ── Instant Restart (Geometry Dash respawn flow) ──
+  const handleRestart = useCallback(() => {
+    runRef.current = false
+    clearTimeout(beatRef.current)
+    pendingRef.current.forEach((id) => {
+      clearTimeout(id)
+      clearInterval(id)
+    })
+    pendingRef.current = []
+    stop()
+    setPhase('countdown')
+  }, [stop])
+
+  // ── Button Hit Handler ──
   const handleBtnClick = useCallback((btnId) => {
+    let clickResult = null
+
     setButtons(prev => {
       const btn = prev.find(b => b.id === btnId)
       if (!btn) return prev
-      const timing = msToBar(Date.now() - btn.appearedAt)
+
+      const latency = Date.now() - (btn.appearedAt || Date.now())
+      const timing = msToBar(latency)
+      gs.current.latencies.push(latency)
+      clickResult = { btn, timing, latency }
+
       if (btn.isTrick) {
-        scoreRef.current = Math.max(0, scoreRef.current - 5)
-        livesRef.current = Math.max(0, livesRef.current - 1)
-        comboRef.current = 0; trickRef.current++
-        setScore(scoreRef.current); setLives(livesRef.current); setCombo(0)
-        doFlash('trick'); setShaking(true); setTimeout(() => setShaking(false), 380)
-        playSFX('trick', settings.sfxVolume); storeAddTrick()
-        addPopup('−5 TRICK!', 'trick', btn.slot)
-        if (livesRef.current <= 0) { endGame(); return prev.filter(b => b.id !== btnId) }
+        if (hasShieldRef.current) {
+          hasShieldRef.current = false
+          scheduleSideEffect(() => {
+            setHasShield(false)
+            addPopup('🛡️ QALQON HIMOYA QILDI!', 'GREAT', btn.slot)
+            playSFX('hit', settings.sfxVolume)
+          })
+        } else {
+          gs.current.score = Math.max(0, gs.current.score - 5)
+          gs.current.lives = Math.max(0, gs.current.lives - 1)
+          gs.current.combo = 0
+          gs.current.tricks++
+        }
+      } else if (btn.isGold) {
+        gs.current.combo++
+        gs.current.score += 50
+        gs.current.hits++
+      } else if (btn.isShield) {
+        gs.current.combo++
+        gs.current.score += 15
+        gs.current.hits++
+        hasShieldRef.current = true
       } else {
-        comboRef.current++
-        const mult   = [1,1,1.2,1.5,1.8,2,2.5,3][Math.min(comboRef.current, 7)]
-        const earned = Math.round(timing.score * mult)
-        scoreRef.current += earned; hitsRef.current++
-        setScore(scoreRef.current); setCombo(comboRef.current)
-        setMaxCombo(m => Math.max(m, comboRef.current))
-        playSFX(comboRef.current >= 5 ? 'combo' : 'hit', settings.sfxVolume)
-        doFlash('hit'); storeAddHit()
-        addPopup(`+${earned}`, timing.grade, btn.slot)
+        gs.current.combo++
+        const mult = COMBO_MULT[Math.min(gs.current.combo, COMBO_MULT.length - 1)]
+        const bonus = btn.isBurst ? 1.5 : 1.0
+        gs.current.score += Math.round(timing.score * mult * bonus)
+        gs.current.hits++
+
+        // 🛡️ Combo Life Recovery: Every 8 consecutive combo hits restores +1 Life!
+        if (gs.current.combo % 8 === 0 && gs.current.lives < MAX_LIVES) {
+          gs.current.lives = Math.min(MAX_LIVES, gs.current.lives + 1)
+        }
       }
       return prev.filter(b => b.id !== btnId)
     })
-  }, [playSFX, settings.sfxVolume, storeAddHit, storeAddTrick, endGame])
+
+    if (!clickResult) return
+    const { btn, timing } = clickResult
+
+    if (btn.isTrick) {
+      if (!hasShieldRef.current) {
+        storeAddTrick()
+        scheduleSideEffect(() => {
+          setScore(gs.current.score)
+          setLives(gs.current.lives)
+          setCombo(0)
+          doFlash('trick')
+          setShaking(true)
+          setTimeout(() => setShaking(false), 380)
+          playSFX('trick', settings.sfxVolume)
+          addPopup('−5 TRICK!', 'trick', btn.slot)
+          setAiSpeech(getAICommentary('trickWarning'))
+          if (gs.current.lives <= 0) endGameRef.current?.(false)
+        })
+      }
+    } else if (btn.isGold) {
+      storeAddHit()
+      scheduleSideEffect(() => {
+        setScore(gs.current.score)
+        setCombo(gs.current.combo)
+        setMaxCombo(m => Math.max(m, gs.current.combo))
+        doFlash('hit')
+        playSFX('combo', settings.sfxVolume)
+        addPopup('+50 🌟 FEVER!', 'PERFECT', btn.slot)
+        setAiSpeech(getAICommentary('goldBonus'))
+      })
+    } else if (btn.isShield) {
+      storeAddHit()
+      scheduleSideEffect(() => {
+        setHasShield(true)
+        setScore(gs.current.score)
+        setCombo(gs.current.combo)
+        setMaxCombo(m => Math.max(m, gs.current.combo))
+        doFlash('hit')
+        playSFX('hit', settings.sfxVolume)
+        addPopup('🛡️ AEGIS QALQON!', 'GREAT', btn.slot)
+        setAiSpeech(getAICommentary('shieldActive'))
+      })
+    } else {
+      storeAddHit()
+      const comboIdx = Math.min(gs.current.combo, COMBO_MULT.length - 1)
+      const bonus = btn.isBurst ? 1.5 : 1.0
+      const earned = Math.round(timing.score * COMBO_MULT[comboIdx] * bonus)
+      scheduleSideEffect(() => {
+        setScore(gs.current.score)
+        setLives(gs.current.lives)
+        setCombo(gs.current.combo)
+        setMaxCombo(m => Math.max(m, gs.current.combo))
+        doFlash('hit')
+        playSFX(gs.current.combo >= 5 ? 'combo' : 'hit', settings.sfxVolume)
+        addPopup(`+${earned}${btn.isBurst ? ' ⚡RUSH' : ''}`, timing.grade, btn.slot)
+
+        if (gs.current.combo % 8 === 0) {
+          addPopup('+1 ❤️ HAYOT TIKLANDI!', 'GREAT', btn.slot)
+          setAiSpeech(getAICommentary('comboStreak'))
+        } else if (timing.grade === 'PERFECT') {
+          if (Math.random() < 0.4) setAiSpeech(getAICommentary('hitPerfect'))
+        }
+      })
+    }
+  }, [playSFX, settings.sfxVolume, storeAddHit, storeAddTrick, doFlash, addPopup])
+
+  // ── Full Keyboard Controls: Q W E / A S D / Z X C / Spacebar (Instant Retry on End) ──
+  useEffect(() => {
+    const keyMap = {
+      'q': 0, 'w': 1, 'e': 2,
+      'a': 3, 's': 4, 'd': 5,
+      'z': 6, 'x': 7, 'c': 8,
+      '7': 0, '8': 1, '9': 2,
+      '4': 3, '5': 4, '6': 5,
+      '1': 6, '2': 7, '3': 8,
+    }
+
+    const onKeyDown = (e) => {
+      // Instant Retry on Crash or Game End
+      if (phase === 'ended') {
+        if (e.key === ' ' || e.key === 'r' || e.key === 'R' || e.key === 'Enter') {
+          e.preventDefault()
+          handleRestart()
+        }
+        return
+      }
+
+      if (phase !== 'playing') return
+
+      const key = e.key.toLowerCase()
+      if (key === ' ' || key === 'enter') {
+        e.preventDefault()
+        const target = buttonsRef.current.find(b => !b.isTrick)
+        if (target) handleBtnClick(target.id)
+        return
+      }
+
+      const slot = keyMap[key]
+      if (slot !== undefined) {
+        e.preventDefault()
+        setPressedKey(key.toUpperCase())
+        setTimeout(() => setPressedKey(null), 130)
+        const target = buttonsRef.current.find(b => b.slot === slot)
+        if (target) handleBtnClick(target.id)
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [phase, handleBtnClick, handleRestart])
 
   const handleTrackSelect = useCallback((selectedTrack) => {
     setTrack(selectedTrack)
     setPhase('countdown')
   }, [])
 
-  const handleStartGame = useCallback(() => {
-    setPhase('countdown')
-  }, [])
-
-  const handleNewRandom = useCallback(() => {
-    setTrackLoading(true)
-    fetchRandomTrack(world.id).then(t => {
-      setTrack(t)
-      setTrackLoading(false)
+  const handleExit = useCallback(() => {
+    runRef.current = false
+    clearTimeout(beatRef.current)
+    pendingRef.current.forEach((id) => {
+      clearTimeout(id)
+      clearInterval(id)
     })
-  }, [world.id])
-
-  useEffect(() => {
-    if (phase === 'ended') {
-      const t = setTimeout(() => router.push('/game/result'), 1200)
-      return () => clearTimeout(t)
-    }
-  }, [phase, router])
+    pendingRef.current = []
+    stop()
+    router.push('/')
+  }, [stop, router])
 
   return (
-    <div className={`fixed inset-0 select-none ${shaking ? 'animate-shake' : ''}`}
-      style={{ background: `linear-gradient(135deg, ${world.theme.bg.split(' ')[0].replace('from-[','').replace(']','')}, ${world.theme.bg.split(' ')[1].replace('to-[','').replace(']','')})` }}>
+    <div
+      className={`fixed inset-0 select-none ${shaking ? 'animate-shake' : ''}`}
+      style={{
+        background: `linear-gradient(135deg, ${world.theme.bg.split(' ')[0].replace('from-[','').replace(']','')}, ${world.theme.bg.split(' ')[1].replace('to-[','').replace(']','')})`,
+      }}
+    >
       <WorldBackground worldId={world.id} isActive={phase === 'playing'} />
 
-      {/* Ready screen */}
+      {/* Ready Screen */}
       {phase === 'ready' && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center px-4"
-          style={{ background: 'rgba(6,6,15,0.95)', backdropFilter: 'blur(20px)' }}>
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-md text-center">
-            <motion.div className="text-7xl mb-4" animate={{ y: [0,-8,0] }} transition={{ duration: 2, repeat: Infinity }}>
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center px-4 overflow-y-auto py-8"
+          style={{ background: 'rgba(6, 6, 18, 0.94)', backdropFilter: 'blur(24px)' }}
+        >
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-md text-center my-auto">
+            <motion.div className="text-6xl mb-3" animate={{ y: [0, -8, 0] }} transition={{ duration: 2, repeat: Infinity }}>
               {world.emoji}
             </motion.div>
-            <div className="font-display font-black text-2xl mb-1" style={{ color: world.theme.primary }}>
+            <div className="font-display font-black text-2xl mb-0.5" style={{ color: world.theme.primary }}>
               {world.name}
             </div>
-            <p className="text-white/40 font-body text-sm mb-8">{world.bpmRange[0]}–{world.bpmRange[1]} BPM · {world.difficulty}</p>
+            <p className="text-white/40 font-body text-xs mb-5">
+              {world.bpmRange[0]}–{world.bpmRange[1]} BPM · {world.difficulty}
+            </p>
 
-            {/* Track info */}
-            <div className="mb-6 p-4 rounded-2xl" style={{ background: `${world.theme.primary}10`, border: `1px solid ${world.theme.primary}30` }}>
-              <div className="text-white/30 font-display text-xs tracking-widest uppercase mb-2">{t('game.music')}</div>
+            {/* Geometry Dash Style Pacing Selector */}
+            <div className="mb-4 p-3 rounded-2xl text-left" style={{ background: 'rgba(255, 255, 255, 0.04)', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+              <div className="text-white/40 font-display text-[0.65rem] tracking-widest uppercase mb-2">
+                🎮 REJİM VA TEZLIK (GEOMETRY DASH PACING)
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                {[
+                  { id: 'relaxed', label: '🐢 Sokin (50s)', desc: 'Mashq qilish' },
+                  { id: 'normal',  label: '⚡ Standart (65s)', desc: 'Bass Drop + Stars' },
+                  { id: 'rush',    label: '👹 Demon (75s)', desc: 'Haqiqiy Rush x2' },
+                ].map(p => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setPacing(p.id)}
+                    className={`py-2 px-1 rounded-xl text-center font-display transition-all ${
+                      pacing === p.id ? 'border-2 text-black font-black' : 'text-white/50 hover:text-white bg-white/5'
+                    }`}
+                    style={pacing === p.id ? { background: world.theme.primary, borderColor: world.theme.primary, boxShadow: `0 0 14px ${world.theme.primary}66` } : {}}
+                  >
+                    <div className="text-xs font-black">{p.label}</div>
+                    <div className="text-[0.55rem] opacity-75">{p.desc}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* AI Rival Duel Toggle */}
+            <div className="mb-4 p-3 rounded-2xl flex items-center justify-between" style={{ background: 'rgba(155, 77, 255, 0.08)', border: '1px solid rgba(155, 77, 255, 0.25)' }}>
+              <div className="text-left">
+                <div className="font-display font-black text-xs text-[#9b4dff] flex items-center gap-1.5">
+                  <span>🧠 CYBER-NEO [AI DUEL]</span>
+                </div>
+                <div className="text-white/40 text-[0.65rem] font-body">Sun'iy ong bilan real vaqtda musobaqa</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAiDuel(d => !d)}
+                className={`px-3 py-1.5 rounded-xl font-display text-xs font-black transition-all ${
+                  aiDuel ? 'bg-[#9b4dff] text-white shadow-neon-purple' : 'bg-white/10 text-white/40'
+                }`}
+              >
+                {aiDuel ? 'YOQILGAN ✓' : 'O\'CHIQ'}
+              </button>
+            </div>
+
+            {/* Track Info Card */}
+            <div className="mb-4 p-3.5 rounded-2xl" style={{ background: `${world.theme.primary}10`, border: `1px solid ${world.theme.primary}30` }}>
+              <div className="text-white/30 font-display text-[0.65rem] tracking-widest uppercase mb-1.5">{t('game.music')}</div>
               {trackLoading ? (
                 <div className="flex items-center justify-center gap-2 py-2">
-                  <Spinner size="sm" /> <span className="text-white/40 text-sm font-body">{t('common.loading')}</span>
+                  <Spinner size="sm" /> <span className="text-white/40 text-xs font-body">{t('common.loading')}</span>
                 </div>
               ) : track ? (
                 <div className="flex items-center gap-3">
                   {track.artwork && (
-                    <img src={track.artwork} alt="" className="w-12 h-12 rounded-lg flex-shrink-0 object-cover"
-                      style={{ boxShadow: `0 0 12px ${world.theme.primary}44` }} />
+                    <img src={track.artwork} alt="" className="w-10 h-10 rounded-lg flex-shrink-0 object-cover" style={{ boxShadow: `0 0 12px ${world.theme.primary}44` }} />
                   )}
                   <div className="flex-1 text-left min-w-0">
-                    <div className="font-display font-bold text-sm text-white truncate">{track.title}</div>
-                    <div className="text-white/40 text-xs font-body mt-0.5">{t('game.preview')}</div>
+                    <div className="font-display font-bold text-xs text-white truncate">{track.title}</div>
+                    <div className="text-white/40 text-[0.65rem] font-body mt-0.5">{t('game.preview')}</div>
                   </div>
                 </div>
               ) : (
-                <div className="text-white/30 text-sm font-body">Musiqa yuklanmadi — ovoz bo'lmaydi</div>
+                <div className="text-white/30 text-xs font-body">Sintezator ritmi faol (Audio avtomatik)</div>
               )}
             </div>
 
-            {/* Buttons */}
-            <div className="space-y-3">
-              <motion.button onClick={handleStartGame} disabled={trackLoading}
-                whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}
-                className="w-full py-4 rounded-xl font-display font-black text-base tracking-wider disabled:opacity-50"
-                style={{ background: `linear-gradient(135deg, ${world.theme.primary}, ${world.theme.secondary})`, color: '#000', boxShadow: `0 0 30px ${world.theme.primary}50` }}>
+            {/* Quick Game Guide Box (Explains rules clearly) */}
+            <div className="mb-4 p-3 rounded-2xl text-left bg-black/40 border border-white/10">
+              <div className="text-[0.65rem] font-display font-black text-white/80 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                <span>🎯</span>
+                <span>GEOMETRY RUSH QOIDALARI (0% → 100%):</span>
+              </div>
+              <ul className="text-[0.68rem] font-body text-white/70 space-y-1">
+                <li className="flex items-start gap-1.5">
+                  <span className="text-[#00f0ff] font-bold">1.</span>
+                  <span><strong>Halqa yetganda bosing:</strong> Neon halqa tugmaga yetganda bossangiz, PERFECT (+15 ball)!</span>
+                </li>
+                <li className="flex items-start gap-1.5">
+                  <span className="text-[#ffe135] font-bold">2.</span>
+                  <span><strong>Oltin Yulduz 🌟 va Qalqon 🛡️:</strong> +50 ball bonus va keyingi xatodan himoya beradi.</span>
+                </li>
+                <li className="flex items-start gap-1.5">
+                  <span className="text-[#ff3030] font-bold">3.</span>
+                  <span><strong>Qizil Trick tugmalarni BOSMANG:</strong> Ular o'tib ketguncha kuting, jazo bo'lmaydi.</span>
+                </li>
+              </ul>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="space-y-2.5">
+              <motion.button
+                onClick={() => setPhase('countdown')}
+                disabled={trackLoading}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                className="w-full py-4 rounded-xl font-display font-black text-sm tracking-wider uppercase disabled:opacity-50 cursor-pointer text-black"
+                style={{
+                  background: `linear-gradient(135deg, ${world.theme.primary}, ${world.theme.secondary})`,
+                  boxShadow: `0 0 30px ${world.theme.primary}50`,
+                }}
+              >
                 ▶ {t('game.start').toUpperCase()}
               </motion.button>
 
               <div className="flex gap-2">
-                <motion.button onClick={handleNewRandom} disabled={trackLoading}
-                  whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
-                  className="flex-1 py-3 rounded-xl font-display text-xs tracking-wider transition-all disabled:opacity-40"
-                  style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.6)' }}>
-                  🔀 {t('game.random')}
-                </motion.button>
-                <motion.button onClick={() => setPhase('search')}
-                  whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
-                  className="flex-1 py-3 rounded-xl font-display text-xs tracking-wider transition-all"
-                  style={{ background: 'rgba(255,255,255,0.05)', border: `1px solid ${world.theme.primary}44`, color: world.theme.primary }}>
-                  🔍 {t('game.search')}
-                </motion.button>
+                <button
+                  onClick={() => loadTrack(world.id)}
+                  disabled={trackLoading}
+                  className="flex-1 py-2.5 rounded-xl font-display text-xs tracking-wider text-white/60 hover:text-white bg-white/5 border border-white/10"
+                >
+                  🔀 YANGI TREK
+                </button>
+                <button
+                  onClick={() => setPhase('search')}
+                  className="flex-1 py-2.5 rounded-xl font-display text-xs tracking-wider border"
+                  style={{ borderColor: `${world.theme.primary}44`, color: world.theme.primary, background: 'rgba(255,255,255,0.04)' }}
+                >
+                  🔍 QIDIRUV
+                </button>
               </div>
 
-              <motion.button onClick={() => setHelpOpen(true)}
-                whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
-                className="w-full py-3 rounded-xl font-display text-xs tracking-wider transition-all"
-                style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.8)' }}>
-                ❓ {t('game.help').toUpperCase()}
-              </motion.button>
-
-              <button onClick={() => router.push('/')}
-                className="text-white/25 hover:text-white/50 font-display text-xs tracking-widest transition-colors w-full py-2">
-                ← {t('common.back').toUpperCase()}
+              <button
+                onClick={handleExit}
+                className="text-white/30 hover:text-white/60 font-display text-xs tracking-widest w-full py-2"
+              >
+                ← ORQAGA
               </button>
             </div>
           </motion.div>
         </div>
       )}
 
-      {/* Search overlay */}
+      {/* Music Search */}
       {phase === 'search' && (
         <div className="fixed inset-0 z-50">
           <MusicSearch onSelect={handleTrackSelect} worldTheme={world.theme} />
-          <button onClick={() => setPhase('ready')}
-            className="fixed top-4 left-4 z-50 text-white/40 hover:text-white font-display text-xs tracking-wider transition-colors px-3 py-2 rounded-lg"
-            style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}>
-            ← {t('common.back').toUpperCase()}
+          <button
+            onClick={() => setPhase('ready')}
+            className="fixed top-4 left-4 z-50 text-white/50 hover:text-white font-display text-xs tracking-wider px-3 py-2 rounded-lg bg-white/5 border border-white/10"
+          >
+            ← ORQAGA
           </button>
         </div>
       )}
 
-      {/* Flash overlay */}
+      {/* Hit / Miss Screen Flash */}
       <AnimatePresence>
         {flash && (
-          <motion.div key={flash} initial={{ opacity: 0.35 }} animate={{ opacity: 0 }}
+          <motion.div
+            key={flash}
+            initial={{ opacity: 0.35 }}
+            animate={{ opacity: 0 }}
             className="fixed inset-0 z-30 pointer-events-none"
-            style={{ background: flash === 'hit' ? 'rgba(0,255,135,0.2)' : flash === 'trick' ? 'rgba(255,48,48,0.3)' : 'rgba(255,45,120,0.2)' }} />
+            style={{
+              background: flash === 'hit' ? 'rgba(0,255,135,0.22)' : flash === 'trick' ? 'rgba(255,48,48,0.35)' : 'rgba(255,45,120,0.22)',
+            }}
+          />
         )}
       </AnimatePresence>
 
-      {/* HUD */}
+      {/* Top HUD */}
       {(phase === 'playing' || phase === 'countdown') && (
-        <div className="fixed top-0 left-0 right-0 z-20 h-14 flex items-center justify-between px-4"
-          style={{ background:'rgba(6,6,15,0.7)', backdropFilter:'blur(12px)', borderBottom:'1px solid rgba(30,30,64,0.6)' }}>
+        <div
+          className="fixed top-0 left-0 right-0 z-20 h-16 flex items-center justify-between px-4 md:px-8"
+          style={{ background: 'rgba(6, 6, 18, 0.82)', backdropFilter: 'blur(16px)', borderBottom: '1px solid rgba(255, 255, 255, 0.08)' }}
+        >
+          {/* Left: Exit & World info */}
           <div className="flex items-center gap-4">
-            <button onClick={() => { runRef.current = false; stop(); router.push('/') }}
-              className="text-white/30 hover:text-white font-display text-xs tracking-wider transition-colors">
-              ← {t('game.exit').toUpperCase()}
+            <button
+              onClick={handleExit}
+              className="text-white/30 hover:text-white font-display text-xs tracking-wider transition-colors"
+            >
+              ← CHIQISH
             </button>
-            <div className="flex items-center gap-2">
-              {track?.artwork && <img src={track.artwork} alt="" className="w-7 h-7 rounded-md object-cover opacity-80" />}
+            <div className="flex items-center gap-2.5">
+              <span className="text-2xl">{world.emoji}</span>
               <div className="flex flex-col">
-                <span className="font-display font-bold text-xs" style={{ color: world.theme.primary }}>{world.emoji} {world.name}</span>
-                <span className="text-white/30 text-[0.6rem] truncate max-w-[140px]">{track?.title || '...'}</span>
+                <span className="font-display font-black text-xs" style={{ color: world.theme.primary }}>{world.name}</span>
+                <span className="text-white/30 text-[0.65rem] truncate max-w-[120px] md:max-w-[180px]">{track?.title || 'Beat Ritm'}</span>
               </div>
             </div>
           </div>
+
+          {/* Center: Cyber-Sensei AI Companion HUD (Clickable to open AI Tactics) */}
+          <div
+            onClick={() => setAiModalOpen(true)}
+            className="cursor-pointer pointer-events-auto hover:opacity-90 transition-opacity"
+            title="Cyber-Neo AI Taktika va Maslahatlari"
+          >
+            <CyberSenseiHUD
+              speech={aiSpeech}
+              rivalMode={aiDuel}
+              rivalData={aiRivalState}
+              playerScore={score}
+              worldColor={world.theme.primary}
+            />
+          </div>
+
+          {/* Right: Scores & Lives */}
           <div className="flex items-center gap-5">
             <div className="text-center">
               <div className="font-display font-black text-xl leading-none" style={{ color: world.theme.primary }}>{formatScore(score)}</div>
-              <div className="text-white/25 text-[0.6rem] tracking-widest">{t('game.score').toUpperCase()}</div>
-            </div>
-            <div className="text-center">
-              <div className="font-display font-black text-xl leading-none text-white">Lv.{currentLevel}</div>
-              <div className="text-white/25 text-[0.6rem] tracking-widest">{t('common.level').toUpperCase()}</div>
+              <div className="text-white/25 text-[0.55rem] tracking-widest uppercase">BALL</div>
             </div>
             <div className="text-center hidden sm:block">
-              <div className="font-display font-black text-xl leading-none text-white">{planetLevel}</div>
-              <div className="text-white/25 text-[0.6rem] tracking-widest">PLANET</div>
+              <div className="font-display font-black text-xl leading-none text-white">Lv.{currentLevel}</div>
+              <div className="text-white/25 text-[0.55rem] tracking-widest uppercase">DARAJA</div>
             </div>
-            <LivesDisplay lives={lives} />
+            <LivesDisplay lives={lives} maxLives={MAX_LIVES} />
+          </div>
+
+          {/* Neon Song Progress bar under Top HUD */}
+          <div className="absolute bottom-0 left-0 right-0 h-1 bg-white/10">
+            <div
+              className="h-full transition-all duration-300"
+              style={{
+                background: currentPercent > 70
+                  ? 'linear-gradient(90deg, #ff2d78, #ff3030)'
+                  : currentPercent > 35
+                  ? 'linear-gradient(90deg, #00f0ff, #ffe135)'
+                  : 'linear-gradient(90deg, #00ff87, #00f0ff)',
+                boxShadow: `0 0 10px ${currentPercent > 70 ? '#ff3030' : '#00f0ff'}`,
+                width: `${currentPercent}%`,
+              }}
+            />
           </div>
         </div>
       )}
 
+      {/* Combo Display */}
       {phase === 'playing' && (
-        <div className="fixed bottom-0 left-0 right-0 z-20 px-4 pb-3 pt-2" style={{ background:'rgba(6,6,15,0.5)' }}>
-          <BeatVisualizer getFrequencyData={getFrequencyData} color={world.theme.primary} isActive />
-        </div>
-      )}
-
-      {phase === 'playing' && (
-        <div className="fixed left-4 top-1/2 -translate-y-1/2 z-20">
+        <div className="fixed left-4 top-1/2 -translate-y-1/2 z-20 pointer-events-none">
           <ComboDisplay combo={combo} worldColor={world.theme.primary} />
         </div>
       )}
 
-      <div className="fixed inset-0 top-14 bottom-16 z-10">
-        <AnimatePresence>
-          {buttons.map(btn => {
-            const pos = GRID_POSITIONS[btn.slot] ?? GRID_POSITIONS[4]
-            return (
-              <div key={btn.id} style={{ position:'absolute', left:`calc(${pos.x}% - 30px)`, top:`calc(${pos.y}% - 30px)` }}>
-                <BeatButton button={btn} onClick={handleBtnClick} worldTheme={world.theme} />
-              </div>
-            )
-          })}
-        </AnimatePresence>
-      </div>
+      {/* Centered Cyber Arena Stage (Holographic Launchpad, 100% click registration) */}
+      {(phase === 'playing' || phase === 'countdown') && (
+        <div className="fixed inset-0 top-16 bottom-14 flex items-center justify-center p-3 z-20 pointer-events-none">
+          <div className="w-full max-w-2xl pointer-events-auto">
+            <CyberPlayfield
+              buttons={buttons}
+              onButtonClick={handleBtnClick}
+              worldTheme={world.theme}
+              activeKey={pressedKey}
+              songProgress={currentPercent}
+              timeLeft={timeLeft}
+              currentWave={currentWave}
+              hasShield={hasShield}
+              bestPercent={bestPercent}
+            />
+          </div>
+        </div>
+      )}
 
-      {popups.map(p => <ScorePopup key={p.id} {...p} onDone={removePopup} />)}
+      {/* Bottom Beat Visualizer (pointer-events-none ensures it NEVER blocks clicks!) */}
+      {phase === 'playing' && (
+        <div className="fixed bottom-0 left-0 right-0 z-10 pointer-events-none px-4 pb-1 pt-1 opacity-70">
+          <BeatVisualizer getFrequencyData={getFrequencyData} color={world.theme.primary} isActive />
+        </div>
+      )}
 
+      {/* Score Popups */}
+      {popups.map(p => (
+        <ScorePopup key={p.id} {...p} onDone={removePopup} />
+      ))}
+
+      {/* Countdown 3-2-1 */}
       {phase === 'countdown' && (
         <CountdownOverlay onDone={handleCountdownDone} worldColor={world.theme.primary} />
       )}
 
+      {/* Geometry Dash Style Crash / Victory Screen */}
       <AnimatePresence>
         {phase === 'ended' && (
-          <motion.div initial={{ opacity:0 }} animate={{ opacity:1 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
-            <div className="font-display font-black text-6xl" style={{ color:'#ff3030', textShadow:'0 0 40px #ff3030' }}>
-              {t('game.gameOver').toUpperCase()}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md px-4"
+          >
+            <div
+              className="text-center max-w-md w-full p-6 md:p-8 rounded-3xl relative overflow-hidden shadow-2xl"
+              style={{
+                background: 'linear-gradient(135deg, rgba(14, 16, 42, 0.95) 0%, rgba(6, 6, 18, 0.98) 100%)',
+                border: `1.5px solid ${isVictory ? '#00ff87' : '#ff2d78'}66`,
+                boxShadow: `0 0 50px ${isVictory ? '#00ff87' : '#ff2d78'}33`,
+              }}
+            >
+              <BorderBeam
+                size={280}
+                duration={3}
+                colorFrom={isVictory ? '#00ff87' : '#ff2d78'}
+                colorTo={isVictory ? '#00f0ff' : '#ffe135'}
+              />
+
+              {/* Title & Status */}
+              <motion.div
+                initial={{ scale: 0.5, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={{ type: 'spring', stiffness: 220, damping: 15 }}
+                className="font-display font-black text-4xl md:text-5xl mb-2"
+                style={{
+                  color: isVictory ? '#00ff87' : '#ff3030',
+                  textShadow: `0 0 30px ${isVictory ? '#00ff87' : '#ff3030'}`,
+                }}
+              >
+                {isVictory ? '👑 100% COMPLETE!' : `💀 CRASH AT ${deathPercent}%`}
+              </motion.div>
+
+              <div className="font-display text-xs text-white/70 mb-4">
+                {isVictory
+                  ? 'Barcha to\'lqinlar muvaffaqiyatli zabt etildi! Afsonaviy ritm!'
+                  : deathPercent >= bestPercent && deathPercent > 0
+                  ? '🎉 Yangi shaxsiy rekord o\'rnatildi!'
+                  : `Eng yaxshi natijangiz: ${bestPercent}%`}
+              </div>
+
+              {/* Progress bar preview */}
+              <div className="mb-5 p-3.5 rounded-2xl bg-white/5 border border-white/10">
+                <div className="flex justify-between text-[0.65rem] font-display text-white/50 mb-1.5">
+                  <span>TREK PROGRESSI</span>
+                  <span className="font-bold text-white">{deathPercent}% / 100%</span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-white/10 overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${deathPercent}%`,
+                      background: isVictory
+                        ? 'linear-gradient(90deg, #00ff87, #00f0ff)'
+                        : 'linear-gradient(90deg, #ff2d78, #ff3030)',
+                      boxShadow: `0 0 10px ${isVictory ? '#00ff87' : '#ff3030'}`,
+                    }}
+                  />
+                </div>
+                <div className="flex justify-between items-center mt-3 text-xs font-display">
+                  <span className="text-white/60">Ball: <strong className="text-white">{formatScore(gs.current.score)}</strong></span>
+                  <span className="text-white/60">Combo: <strong style={{ color: world.theme.primary }}>{maxCombo}x</strong></span>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="space-y-2 relative z-10">
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleRestart}
+                  className="w-full py-3.5 rounded-xl font-display font-black text-xs tracking-wider uppercase text-black cursor-pointer shadow-lg flex items-center justify-center gap-2"
+                  style={{
+                    background: 'linear-gradient(135deg, #00f0ff 0%, #00ff87 100%)',
+                    boxShadow: '0 0 25px rgba(0, 240, 255, 0.4)',
+                  }}
+                >
+                  <span>🔄 QAYTA BOSHLASH [SPACE]</span>
+                </motion.button>
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => router.push('/game/result')}
+                    className="flex-1 py-2.5 rounded-xl font-display text-xs tracking-wider text-white bg-white/10 hover:bg-white/15 border border-white/10"
+                  >
+                    📊 STATISTIKA
+                  </button>
+                  <button
+                    onClick={handleExit}
+                    className="flex-1 py-2.5 rounded-xl font-display text-xs tracking-wider text-white/50 hover:text-white bg-white/5 border border-white/10"
+                  >
+                    ← MENYU
+                  </button>
+                </div>
+              </div>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      <AnimatePresence>
-        {helpOpen && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[60] flex items-center justify-center px-4 bg-black/70">
-            <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 10, opacity: 0 }}
-              className="w-full max-w-xl rounded-2xl p-6"
-              style={{ background: 'rgba(9,9,20,0.95)', border: `1px solid ${world.theme.primary}44` }}>
-              <div className="flex items-start justify-between gap-4 mb-4">
-                <h3 className="font-display font-black text-xl" style={{ color: world.theme.primary }}>
-                  {t('game.helpTitle')}
-                </h3>
-                <button onClick={() => setHelpOpen(false)} className="text-white/60 hover:text-white text-sm">✕</button>
-              </div>
-              <div className="space-y-3 text-sm text-white/80 font-body">
-                <p>• {t('game.helpWin')}</p>
-                <p>• {t('game.helpPlanets')}</p>
-                <p>• {t('game.helpTrick')}</p>
-                <p>• {t('game.helpDifficulty')}</p>
-                <p>• {t('game.helpPlanetLevel')}</p>
-              </div>
-              <div className="mt-4 p-3 rounded-lg text-xs font-display text-white/70"
-                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
-                BPM: {bpm} | Buttons: {buttonCount} | Trick: {Math.round(trickChance * 100)}%
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* In-Game AI Tactics Dialogue Modal */}
+      <AIChatModal isOpen={aiModalOpen} onClose={() => setAiModalOpen(false)} />
     </div>
   )
 }
 
 export default function GamePage() {
-  return <ProtectedRoute><GameScreen /></ProtectedRoute>
+  return <GameScreen />
 }

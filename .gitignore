@@ -3,6 +3,8 @@ node_modules/
 
 # next.js build output
 .next/
+out/
+dist/
 
 # logs
 npm-debug.log*
@@ -10,4 +12,9 @@ yarn-debug.log*
 yarn-error.log*
 
 # env files
-.env
+.env*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -115,7 +115,16 @@ export function useAudio() {
     } catch {}
   }, [getCtx])
 
-  useEffect(() => () => stop(), [stop])
+  useEffect(() => {
+    return () => {
+      stop()
+      // Close AudioContext on unmount to free resources
+      if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+        audioCtxRef.current.close().catch(() => {})
+        audioCtxRef.current = null
+      }
+    }
+  }, [stop])
 
   return { loadAndPlay, stop, setVolume, playSFX, getFrequencyData, analyser: analyserRef }
 }

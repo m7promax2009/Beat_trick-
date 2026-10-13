@@ -7,15 +7,18 @@ import useStore from '../store/useStore'
 import Navbar from '../components/layout/Navbar'
 import NeonButton from '../components/ui/NeonButton'
 import GlassCard from '../components/ui/GlassCard'
+import BorderBeam from '../components/ui/BorderBeam'
+import CyberNeoHomeWidget from '../components/ai/CyberNeoHomeWidget'
+import AIChatModal from '../components/ai/AIChatModal'
 import { WORLDS, getPlanetLevel } from '../lib/worlds'
 import { useMenuMusic } from '../hooks/useMenuMusic'
 import { tFor } from '../lib/i18n'
 
 const FEATURES = [
-  { icon: '🎵', title: 'Beat Sync',    desc: 'Musiqa ritmiga mos tugmalar chiqadi' },
-  { icon: '⚠️', title: 'Trick System', desc: "Yolg'on tugmalardan saqlan!" },
-  { icon: '🌍', title: '7 ta Dunyo',   desc: 'Forest dan Cyber God ga qadar' },
-  { icon: '🏆', title: 'Leaderboard',  desc: 'Global va haftalik reyting' },
+  { icon: '🧠', title: 'Cyber-Neo AI', desc: 'Real-vaqt AI murabbiy va ghost duel rejimi' },
+  { icon: '🎵', title: 'Beat Sync',    desc: 'Musiqa ritmiga mos approach ringlar' },
+  { icon: '⌨️', title: 'Klaviatura',  desc: 'Q W E / A S D / Z X C yoki Sensor bilan' },
+  { icon: '⚠️', title: 'Trick System', desc: "Qizil yolg'on tugmalardan ehtiyot bo'ling" },
 ]
 
 function Dashboard() {
@@ -23,6 +26,7 @@ function Dashboard() {
   const { user, currentLevel, setCurrentLevel, settings } = useStore()
   const canvasRef = useRef(null)
   const [musicOn, setMusicOn] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
   const { start: startMusic, stop: stopMusic } = useMenuMusic()
 
   const currentWorld = WORLDS.find(w => currentLevel >= w.levels[0] && currentLevel <= w.levels[1]) || WORLDS[0]
@@ -50,7 +54,10 @@ function Dashboard() {
     canvas.width = window.innerWidth
     canvas.height = window.innerHeight
     let animId
-    const particles = Array.from({ length: 60 }, () => ({
+    let hidden = false
+    const onVis = () => { hidden = document.hidden }
+    document.addEventListener('visibilitychange', onVis)
+    const particles = Array.from({ length: 40 }, () => ({
       x: Math.random() * canvas.width, y: Math.random() * canvas.height,
       vx: (Math.random() - 0.5) * 0.3, vy: (Math.random() - 0.5) * 0.3,
       r: Math.random() * 1.5 + 0.4,
@@ -58,21 +65,24 @@ function Dashboard() {
       alpha: Math.random() * 0.3 + 0.05,
     }))
     const draw = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
-      particles.forEach(p => {
-        p.x += p.vx; p.y += p.vy
-        if (p.x < 0) p.x = canvas.width; if (p.x > canvas.width) p.x = 0
-        if (p.y < 0) p.y = canvas.height; if (p.y > canvas.height) p.y = 0
-        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2)
-        ctx.fillStyle = p.color; ctx.globalAlpha = p.alpha; ctx.fill()
-      })
-      ctx.globalAlpha = 1
+      if (!hidden) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+        particles.forEach(p => {
+          p.x += p.vx; p.y += p.vy
+          if (p.x < 0) p.x = canvas.width; if (p.x > canvas.width) p.x = 0
+          if (p.y < 0) p.y = canvas.height; if (p.y > canvas.height) p.y = 0
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2)
+          ctx.fillStyle = p.color; ctx.globalAlpha = p.alpha; ctx.fill()
+        })
+        ctx.globalAlpha = 1
+      }
       animId = requestAnimationFrame(draw)
     }
     draw()
-    const onResize = () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight }
+    let resizeTimer
+    const onResize = () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { canvas.width = window.innerWidth; canvas.height = window.innerHeight }, 150) }
     window.addEventListener('resize', onResize)
-    return () => { cancelAnimationFrame(animId); window.removeEventListener('resize', onResize) }
+    return () => { cancelAnimationFrame(animId); document.removeEventListener('visibilitychange', onVis); window.removeEventListener('resize', onResize) }
   }, [])
 
   return (
@@ -120,11 +130,17 @@ function Dashboard() {
           </div>
         </motion.div>
 
+        {/* Prominent AI Agent Sensei Widget */}
+        <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }}>
+          <CyberNeoHomeWidget onOpenChat={() => setChatOpen(true)} />
+        </motion.div>
+
         {/* Current world + Play button */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-          className="mb-8 rounded-2xl overflow-hidden relative"
+          className="mb-8 rounded-2xl overflow-hidden relative shadow-2xl"
           style={{ background: `linear-gradient(135deg, ${currentWorld.theme.primary}12, ${currentWorld.theme.secondary}08)`, border: `1px solid ${currentWorld.theme.primary}30` }}>
-          <div className="p-6 flex items-center justify-between flex-wrap gap-4">
+          <BorderBeam colorFrom={currentWorld.theme.primary} colorTo={currentWorld.theme.secondary} size={300} duration={5} />
+          <div className="p-6 flex items-center justify-between flex-wrap gap-4 relative z-10">
             <div className="flex items-center gap-4">
               <motion.div className="text-6xl" animate={{ y: [0, -6, 0] }} transition={{ duration: 2, repeat: Infinity }}>
                 {currentWorld.emoji}
@@ -142,7 +158,7 @@ function Dashboard() {
             <Link href="/game">
               <motion.button
                 whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
-                className="px-8 py-4 rounded-xl font-display font-black text-lg tracking-wider"
+                className="px-8 py-4 rounded-xl font-display font-black text-lg tracking-wider cursor-pointer"
                 style={{
                   background: `linear-gradient(135deg, ${currentWorld.theme.primary}, ${currentWorld.theme.secondary})`,
                   color: '#000',
@@ -215,6 +231,8 @@ function Dashboard() {
           <Link href="/shop"><NeonButton variant="ghost" size="sm">🛒 DO'KON</NeonButton></Link>
         </motion.div>
       </div>
+
+      <AIChatModal isOpen={chatOpen} onClose={() => setChatOpen(false)} />
     </div>
   )
 }
@@ -229,7 +247,10 @@ function LandingPage() {
     canvas.width = window.innerWidth
     canvas.height = window.innerHeight
     let animId
-    const particles = Array.from({ length: 70 }, () => ({
+    let hidden = false
+    const onVisLand = () => { hidden = document.hidden }
+    document.addEventListener('visibilitychange', onVisLand)
+    const particles = Array.from({ length: 50 }, () => ({
       x: Math.random() * canvas.width, y: Math.random() * canvas.height,
       vx: (Math.random() - 0.5) * 0.4, vy: (Math.random() - 0.5) * 0.4,
       r: Math.random() * 1.5 + 0.4,
@@ -237,20 +258,24 @@ function LandingPage() {
       alpha: Math.random() * 0.4 + 0.1,
     }))
     const draw = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
-      particles.forEach(p => {
-        p.x += p.vx; p.y += p.vy
-        if (p.x < 0) p.x = canvas.width; if (p.x > canvas.width) p.x = 0
-        if (p.y < 0) p.y = canvas.height; if (p.y > canvas.height) p.y = 0
-        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2)
-        ctx.fillStyle = p.color; ctx.globalAlpha = p.alpha; ctx.fill()
-      })
-      ctx.globalAlpha = 1; animId = requestAnimationFrame(draw)
+      if (!hidden) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+        particles.forEach(p => {
+          p.x += p.vx; p.y += p.vy
+          if (p.x < 0) p.x = canvas.width; if (p.x > canvas.width) p.x = 0
+          if (p.y < 0) p.y = canvas.height; if (p.y > canvas.height) p.y = 0
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2)
+          ctx.fillStyle = p.color; ctx.globalAlpha = p.alpha; ctx.fill()
+        })
+        ctx.globalAlpha = 1
+      }
+      animId = requestAnimationFrame(draw)
     }
     draw()
-    const resize = () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight }
+    let resizeTimer
+    const resize = () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { canvas.width = window.innerWidth; canvas.height = window.innerHeight }, 150) }
     window.addEventListener('resize', resize)
-    return () => { cancelAnimationFrame(animId); window.removeEventListener('resize', resize) }
+    return () => { cancelAnimationFrame(animId); document.removeEventListener('visibilitychange', onVisLand); window.removeEventListener('resize', resize) }
   }, [])
 
   return (

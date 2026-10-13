@@ -10,7 +10,7 @@ const WORLDS_LIST = [
   { emoji: '🌊', name: 'Ocean Drive',    color: '#0088ff' },
   { emoji: '🚀', name: 'Space Warp',     color: '#9b4dff' },
   { emoji: '🌋', name: 'Lava Core',      color: '#ff7c2a' },
-  { emoji: '🧊', name: 'Ice Dimension',  color: '#80ffff' },
+  { emoji: '❄️', name: 'Ice Dimension',  color: '#80ffff' },
   { emoji: '⚡', name: 'Cyber God Mode', color: '#ffe135' },
 ]
 
